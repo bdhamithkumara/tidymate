@@ -126,6 +126,21 @@
   --brand-muted: oklch(0.3 0.04 165);
 }
 
+@keyframes tidymate-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[tidymate-progress_1\.8s_ease-in-out_infinite\] {
+    animation: none;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

@@ -13,10 +13,10 @@ Built for the Hacktoberfest Open-Source AI Challenge, Week 3: "Slow and Steady".
 | Stage | State |
 | --- | --- |
 | Read-only folder scanner | ✅ Built |
-| AI suggestions (Gemma 3 4B via Ollama) | Not started |
-| Review, approval, and applying changes | Not started |
+| AI suggestions (Gemma 3 4B via Ollama) | ✅ Built (suggestions only) |
+| Approving and applying changes | Not started |
 
-Today TidyMate can scan a folder you choose and list its files with safe metadata. It does not call a model and never changes anything on disk.
+Today TidyMate can scan a folder you choose and ask a local Gemma model for a validated organization plan that you can review. It never changes anything on disk.
 
 ## Safety model
 
@@ -55,7 +55,7 @@ The scanner can read any folder your user account can, so it must only be reacha
 
 1. `npm run dev` and `npm run start` bind to `127.0.0.1`, not Next.js's default `0.0.0.0`, so other devices on your network cannot connect.
 2. The scan action rejects any request whose `Host` (or `X-Forwarded-Host`) is not `localhost`, `127.0.0.1`, or `[::1]`. This blocks requests through a LAN address, a reverse proxy, or a DNS-rebinding domain.
-3. Next.js's built-in Server Action CSRF check rejects requests whose `Origin` doesn't match the `Host`.
+3. Next.js's built-in Server Action CSRF check rejects requests whose `Origin` doesn't match the `Host`. The suggestions route handler, which has no built-in check, rejects any request that isn't same-origin JSON (foreign `Origin`, cross-site `Sec-Fetch-Site`, or a form/text content type a cross-site page could send without a CORS preflight).
 
 Do not deploy TidyMate to a public server.
 
@@ -87,6 +87,81 @@ Absolute paths of individual files are never included, so the same data can late
 - **Limits.** At most 2,000 files and 6 levels deep. Traversal is breadth-first, so shallow files are kept when the limit is hit, and the result is marked as truncated.
 - **Safe errors.** Failures map to a fixed set of codes with friendly messages. Raw OS errors are never sent to the browser.
 
+## AI suggestions
+
+After a scan, **Suggest organization** asks Gemma 3 4B, running locally in Ollama, for a plan. The model is treated as an untrusted suggestion generator: it never touches files, and every suggestion is checked by deterministic code before you see it.
+
+```
+Browser ──{ folderPath }──▶ POST /api/suggestions  (local-only, same-origin JSON)
+                              │
+                              ├─ re-scan the folder on the server  (browser metadata is never trusted)
+                              ├─ pick up to 30 files, top-level first
+                              ├─ compact metadata ─▶ OrganizationProvider ─▶ Ollama /api/chat (gemma3:4b)
+                              ├─ Zod: parse the model's JSON
+                              ├─ validatePlan(): deterministic safety checks against the fresh scan
+                              └─ validated suggestions ─▶ Browser (review only, nothing applied)
+```
+
+### What the model sees
+
+Only, per file: its relative path (which includes the name and extension), kind, human-readable size, and modified date. Plus the scanned folder's base name (e.g. `Downloads`). Never absolute paths, file contents, hashes, or anything else. Files are sent as compact JSON rows (`["IMG_4821.jpg","image","2.1 MB","2024-03-02"]`) to keep prompts small for low-end hardware.
+
+The prompt (`lib/ai/prompt.ts`) tells Gemma it is writing a **plan**, not acting; to use only the listed files; not to guess contents or speculate about sensitive matters; to keep extensions; to be conservative with a few simple folders; to never suggest deleting, overwriting, or running anything; and to treat file names as data, not instructions.
+
+### Plan schema
+
+Gemma must return exactly this structure (enforced with Ollama's `format` JSON Schema, generated from Zod, and re-checked with Zod):
+
+```json
+{
+  "suggestions": [
+    {
+      "sourcePath": "IMG_4821.jpg",
+      "action": "move",
+      "suggestedPath": "Images/IMG_4821.jpg",
+      "reason": "Photo that belongs with other images."
+    }
+  ]
+}
+```
+
+- `action` is one of `keep`, `rename`, `move`, `move_and_rename`. Anything else (e.g. `delete`) is rejected.
+- `suggestedPath` is the full new relative path. There is no separate `suggestedName` from the model: a second field could contradict the path, so the name is derived from it.
+- The displayed action is **derived from the two paths**, not taken from the model, so the label always matches the actual change.
+- Unknown fields are rejected. Malformed suggestions are dropped individually; a wrongly shaped answer is rejected as a whole.
+
+Validated suggestions also carry the source file's size and modified time from the scan, so a later step can confirm a file hasn't changed before anything is applied.
+
+### Deterministic validation (`lib/organization/validate-plan.ts`)
+
+A suggestion is shown only if **all** of these hold:
+
+1. Its source exactly matches a file from the fresh server-side scan that was shown to the model. Invented or unseen files are rejected.
+2. Source and destination are relative: no leading `/` or `\`, no drive letter, no UNC path, no `~`.
+3. No `..` segment (checked for both `/` and `\`), no `.` or empty segments, no control characters.
+4. Destination names are portable: no hidden (`.`-prefixed) names, no characters invalid on Windows, no reserved names like `CON`, no trailing dots or spaces.
+5. At most two folder levels deep.
+6. The file extension is unchanged, so nothing can be disguised as another file type.
+7. One suggestion per file. Conflicting suggestions for the same file are all rejected.
+8. No two files may share a destination (compared case-insensitively and Unicode-normalized).
+9. A destination may not be an existing file or folder, or sit inside a path that is a file. This rules out overwrites, chains, and swaps.
+
+Rejected suggestions are listed (collapsed) in the review panel with the reason. If Gemma proposed changes but none survive, the request fails with a "didn't pass safety checks" error instead of showing an empty plan.
+
+### Errors
+
+Failures map to fixed, friendly messages. Stack traces, raw Ollama responses, and filesystem paths never reach the browser: Ollama not running, model not installed (with the `ollama pull` command), timeout, Ollama HTTP error, unreadable JSON, wrong structure, failed validation, cancelled. TidyMate never downloads a model by itself.
+
+### Performance on modest hardware
+
+Gemma 3 4B on a CPU-only machine can be slow. In testing on a laptop with a 2 GB GPU (model ~97% on CPU), it produced ~2–3 tokens/s and took about 4 minutes for 10 files, plus up to 2 minutes to load the model the first time. To cope:
+
+- The request to Ollama is **streamed**. Besides enabling cancellation, this avoids Node's built-in `fetch` giving up when response headers take longer than 5 minutes, which a non-streaming request to a slow machine hits.
+- At most 30 files are sent per request, the prompt is compact, and answers are capped.
+- The model is kept loaded for 15 minutes after a request (`keep_alive`), so a retry doesn't pay the load cost again.
+- `OLLAMA_TIMEOUT_MS` (default 5 minutes) is configurable. On slow machines, set it to `900000` (15 minutes) or more.
+- The loading state shows elapsed time and a **Cancel** button. Cancelling aborts the request to Ollama.
+
 ## Tech stack
 
 - [Next.js](https://nextjs.org) (App Router) + TypeScript (strict)
@@ -107,7 +182,7 @@ npm run dev
 
 Open http://localhost:3000 and paste the path of a folder to scan.
 
-To prepare the local model for upcoming features:
+Install Ollama and the model for AI suggestions (TidyMate never downloads models itself):
 
 ```bash
 ollama pull gemma3:4b
@@ -119,6 +194,7 @@ ollama pull gemma3:4b
 | ----------------- | ------------------------ | ------------------------------ |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server            |
 | `OLLAMA_MODEL`    | `gemma3:4b`              | Model used to propose plans    |
+| `OLLAMA_TIMEOUT_MS` | `300000`               | How long to wait for the model (1s–1h) |
 
 Config is parsed and validated server-side in `lib/config/env.ts`.
 
@@ -133,27 +209,33 @@ Config is parsed and validated server-side in `lib/config/env.ts`.
 | `npm run typecheck`  | Generate route types and run `tsc` |
 | `npm test`           | Run tests once                  |
 | `npm run test:watch` | Run tests in watch mode         |
+| `npm run test:ollama` | Optional live test against your local Ollama (not part of `npm test`) |
 
 ## Project structure
 
 ```
 app/
-  actions/           Server Actions (the only entry points into server code)
+  actions/           Server Actions (folder scan)
+  api/suggestions/   Route handler for AI suggestions (cancellable)
 components/
   landing/           Landing page sections
+  organizer/         Suggestion request, loading state, review list
   scanner/           Folder picker form and scan results
   ui/                shadcn/ui primitives (generated)
 lib/
+  ai/                Server-only AI layer: provider interface, Ollama client,
+                     prompt, response schema, errors. No UI or filesystem code.
   config/            Server-side env parsing (Zod)
   files/             Browser-safe helpers: file kinds, formatting, input schema
+  organization/      Plan validation, path rules, limits, labels, API client
   server/            Server-only code; every module imports "server-only"
     files/           Read-only scanner, path safety, protected locations
+    organization/    Re-scan → AI → validate orchestration, error mapping
   site.ts            Brand copy shared across the app
-types/               Shared serializable types (scan results)
+types/               Shared serializable types (scan results, plans)
 tests/               Vitest unit tests, mirroring the source layout
+  integration/       Optional live Ollama test (`npm run test:ollama`)
 ```
-
-Planned: `lib/ai/` for the Ollama provider, kept separate from UI.
 
 ## License
 

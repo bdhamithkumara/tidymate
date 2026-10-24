@@ -4,6 +4,7 @@ import { CircleAlert, FolderSearch, LoaderCircle } from "lucide-react";
 import { useActionState, useState, type ReactNode } from "react";
 
 import { scanFolderAction, type ScanActionState } from "@/app/actions/scan-folder";
+import { OrganizationPanel } from "@/components/organizer/organization-panel";
 import { ScanResults } from "@/components/scanner/scan-results";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -86,7 +87,16 @@ export function FolderScanner({ aside }: { aside?: ReactNode }) {
         ) : state.status === "error" ? (
           <ScanErrorAlert message={state.error.message} />
         ) : state.status === "success" ? (
-          <ScanResults result={state.result} />
+          <div className="flex flex-col gap-6">
+            <ScanResults result={state.result} />
+            {state.result.files.length > 0 ? (
+              <OrganizationPanel
+                key={state.result.scannedAt}
+                folderPath={state.result.rootPath}
+                fileCount={state.result.stats.fileCount}
+              />
+            ) : null}
+          </div>
         ) : null}
       </div>
     </div>

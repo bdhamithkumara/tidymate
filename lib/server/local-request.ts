@@ -27,3 +27,32 @@ export function isLoopbackRequest(requestHeaders: Headers): boolean {
     hosts.every((host) => LOOPBACK_HOSTNAMES.has(parseHostname(host)))
   );
 }
+
+/**
+ * CSRF guard for route handlers, which (unlike Server Actions) get no
+ * built-in origin check. A browser request from another site either carries a
+ * foreign `Origin`/`Sec-Fetch-Site`, or can't send a JSON body without a CORS
+ * preflight that this app never approves.
+ */
+export function isSameOriginRequest(requestHeaders: Headers): boolean {
+  const fetchSite = requestHeaders.get("sec-fetch-site");
+  if (fetchSite !== null && fetchSite !== "same-origin" && fetchSite !== "none") {
+    return false;
+  }
+
+  const origin = requestHeaders.get("origin");
+  if (origin !== null) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return false;
+    }
+    if (originHost.toLowerCase() !== (requestHeaders.get("host") ?? "").toLowerCase()) {
+      return false;
+    }
+  }
+
+  const contentType = requestHeaders.get("content-type") ?? "";
+  return contentType.split(";")[0]?.trim().toLowerCase() === "application/json";
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isLoopbackRequest, parseHostname } from "@/lib/server/local-request";
+import { isLoopbackRequest, isSameOriginRequest, parseHostname } from "@/lib/server/local-request";
 
 describe("parseHostname", () => {
   it.each([
@@ -48,5 +48,42 @@ describe("isLoopbackRequest", () => {
         new Headers({ host: "localhost:3000", "x-forwarded-host": "localhost:3000, evil.test" }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("isSameOriginRequest", () => {
+  const base = {
+    host: "localhost:3000",
+    origin: "http://localhost:3000",
+    "content-type": "application/json",
+    "sec-fetch-site": "same-origin",
+  };
+
+  it("accepts a same-origin JSON request", () => {
+    expect(isSameOriginRequest(new Headers(base))).toBe(true);
+    expect(isSameOriginRequest(new Headers({ ...base, "content-type": "application/json; charset=utf-8" }))).toBe(true);
+  });
+
+  it("accepts a non-browser JSON request without Origin or Sec-Fetch-Site", () => {
+    expect(isSameOriginRequest(new Headers({ host: "localhost:3000", "content-type": "application/json" }))).toBe(true);
+  });
+
+  it.each([
+    ["a foreign origin", { origin: "http://evil.test" }],
+    ["a different port", { origin: "http://localhost:4000" }],
+    ["a malformed origin", { origin: "not a url" }],
+    ["a cross-site fetch", { "sec-fetch-site": "cross-site" }],
+    ["a same-site fetch", { "sec-fetch-site": "same-site" }],
+    ["a form-encoded body", { "content-type": "application/x-www-form-urlencoded" }],
+    ["a multipart body", { "content-type": "multipart/form-data; boundary=x" }],
+    ["a text/plain body", { "content-type": "text/plain" }],
+  ])("rejects %s", (_label, override) => {
+    expect(isSameOriginRequest(new Headers({ ...base, ...override }))).toBe(false);
+  });
+
+  it("rejects a request with no content type", () => {
+    const headers = new Headers(base);
+    headers.delete("content-type");
+    expect(isSameOriginRequest(headers)).toBe(false);
   });
 });
