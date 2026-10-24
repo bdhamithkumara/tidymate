@@ -1,7 +1,10 @@
+"use client";
+
 import { ArrowDown, ArrowRight, FolderInput, PencilLine, ShieldCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardAction,
@@ -10,7 +13,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ACTION_LABELS, REJECTION_LABELS } from "@/lib/organization/labels";
+import { summarizeSelection, type Selection, type SelectionSummary } from "@/lib/organization/selection";
+import { describeSelection, plural } from "@/lib/organization/summary";
 import type { ChangeAction, OrganizationPlan, OrganizationSuggestion } from "@/types/organization";
 
 const ACTION_ICONS: Record<ChangeAction, LucideIcon> = {
@@ -19,18 +25,25 @@ const ACTION_ICONS: Record<ChangeAction, LucideIcon> = {
   move_and_rename: FolderInput,
 };
 
-function plural(count: number, singular: string, pluralForm = `${singular}s`) {
-  return `${count.toLocaleString()} ${count === 1 ? singular : pluralForm}`;
-}
-
 export function SuggestionReview({
   plan,
+  selection,
+  onToggle,
+  onSelectAll,
+  onDeselectAll,
+  onApply,
   actions,
 }: {
   plan: OrganizationPlan;
+  selection: Selection;
+  onToggle: (sourcePath: string) => void;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
+  onApply: () => void;
   actions?: React.ReactNode;
 }) {
   const count = plan.suggestions.length;
+  const summary = summarizeSelection(plan.suggestions, selection);
 
   return (
     <Card className="gap-0 py-0 shadow-sm">
@@ -38,7 +51,7 @@ export function SuggestionReview({
         <CardTitle>Review these suggestions</CardTitle>
         <CardDescription>
           {count > 0
-            ? `${plan.model} suggested ${plural(count, "change")} for ${plan.rootName}.`
+            ? `${plan.model} suggested ${plural(count, "change")} for ${plan.rootName}. Choose the ones you want.`
             : `${plan.model} didn't suggest any changes for ${plan.rootName}.`}
         </CardDescription>
         {actions ? <CardAction>{actions}</CardAction> : null}
@@ -47,20 +60,47 @@ export function SuggestionReview({
       <div className="flex items-start gap-2 border-b bg-brand-muted/40 px-4 py-3 text-sm">
         <ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden />
         <p>
-          <span className="font-medium">Nothing has been changed.</span>{" "}
+          <span className="font-medium">Nothing has been changed yet.</span>{" "}
           <span className="text-muted-foreground">
-            These are suggestions only. Applying them will come in a later version, and
-            always after your approval.
+            Only the changes you select are applied, after you confirm. TidyMate checks
+            every file again first, and never deletes or overwrites anything.
           </span>
         </p>
       </div>
 
       {count > 0 ? (
-        <ul className="divide-y">
-          {plan.suggestions.map((suggestion) => (
-            <SuggestionRow key={suggestion.sourcePath} suggestion={suggestion} />
-          ))}
-        </ul>
+        <>
+          <SelectionToolbar
+            summary={summary}
+            onSelectAll={onSelectAll}
+            onDeselectAll={onDeselectAll}
+          />
+          <ul className="divide-y">
+            {plan.suggestions.map((suggestion) => (
+              <SuggestionRow
+                key={suggestion.sourcePath}
+                suggestion={suggestion}
+                checked={selection.has(suggestion.sourcePath)}
+                onToggle={onToggle}
+              />
+            ))}
+          </ul>
+          <div className="flex flex-col gap-3 border-t px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-muted-foreground" aria-live="polite">
+              {summary.selectedCount === 0
+                ? "Select at least one change to apply."
+                : describeSelection(summary)}
+            </p>
+            <Button
+              size="lg"
+              className="h-10 px-4"
+              disabled={summary.selectedCount === 0}
+              onClick={onApply}
+            >
+              Apply selected changes
+            </Button>
+          </div>
+        </>
       ) : (
         <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
           <p className="font-medium">This folder already looks tidy</p>
@@ -85,27 +125,84 @@ export function SuggestionReview({
   );
 }
 
-function SuggestionRow({ suggestion }: { suggestion: OrganizationSuggestion }) {
-  const Icon = ACTION_ICONS[suggestion.action];
+function SelectionToolbar({
+  summary,
+  onSelectAll,
+  onDeselectAll,
+}: {
+  summary: SelectionSummary;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
+}) {
   return (
-    <li className="flex flex-col gap-2 px-4 py-4">
-      <div className="flex items-center gap-2">
-        <Badge variant="secondary" className="font-normal">
-          <Icon aria-hidden />
-          {ACTION_LABELS[suggestion.action]}
-        </Badge>
-      </div>
-      <div className="grid gap-1 font-mono text-sm sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
-        <span className="truncate text-muted-foreground" title={suggestion.sourcePath}>
-          {suggestion.sourcePath}
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
+      <label className="flex items-center gap-3 text-sm">
+        <Checkbox
+          checked={summary.allSelected}
+          indeterminate={summary.selectedCount > 0 && !summary.allSelected}
+          onCheckedChange={(checked) => (checked ? onSelectAll() : onDeselectAll())}
+          aria-label="Select all suggestions"
+        />
+        <span>
+          {summary.selectedCount} of {summary.totalCount} selected
         </span>
-        <ArrowRight className="hidden size-4 text-muted-foreground sm:block" aria-label="becomes" />
-        <ArrowDown className="size-4 text-muted-foreground sm:hidden" aria-label="becomes" />
-        <span className="truncate font-medium" title={suggestion.suggestedPath}>
-          {suggestion.suggestedPath}
-        </span>
+      </label>
+      <div className="flex gap-1">
+        <Button variant="ghost" size="sm" onClick={onSelectAll} disabled={summary.allSelected}>
+          Select all
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onDeselectAll}
+          disabled={summary.selectedCount === 0}
+        >
+          Deselect all
+        </Button>
       </div>
-      <p className="text-sm text-muted-foreground">{suggestion.reason}</p>
+    </div>
+  );
+}
+
+function SuggestionRow({
+  suggestion,
+  checked,
+  onToggle,
+}: {
+  suggestion: OrganizationSuggestion;
+  checked: boolean;
+  onToggle: (sourcePath: string) => void;
+}) {
+  const Icon = ACTION_ICONS[suggestion.action];
+  const id = `suggestion-${encodeURIComponent(suggestion.sourcePath)}`;
+  return (
+    <li className="flex gap-3 px-4 py-4 has-data-checked:bg-muted/30">
+      <Checkbox
+        id={id}
+        checked={checked}
+        onCheckedChange={() => onToggle(suggestion.sourcePath)}
+        className="mt-0.5"
+        aria-label={`Select: ${suggestion.sourcePath} to ${suggestion.suggestedPath}`}
+      />
+      <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer flex-col gap-2">
+        <span>
+          <Badge variant="secondary" className="font-normal">
+            <Icon aria-hidden />
+            {ACTION_LABELS[suggestion.action]}
+          </Badge>
+        </span>
+        <span className="grid gap-1 font-mono text-sm sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center sm:gap-3">
+          <span className="truncate text-muted-foreground" title={suggestion.sourcePath}>
+            {suggestion.sourcePath}
+          </span>
+          <ArrowRight className="hidden size-4 text-muted-foreground sm:block" aria-hidden />
+          <ArrowDown className="size-4 text-muted-foreground sm:hidden" aria-hidden />
+          <span className="truncate font-medium" title={suggestion.suggestedPath}>
+            {suggestion.suggestedPath}
+          </span>
+        </span>
+        <span className="text-sm text-muted-foreground">{suggestion.reason}</span>
+      </label>
     </li>
   );
 }

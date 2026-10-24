@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { requestOrganizationPlan } from "@/lib/organization/client";
+import { requestApply, requestOrganizationPlan } from "@/lib/organization/client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -58,5 +58,38 @@ describe("requestOrganizationPlan", () => {
       }),
     );
     await expect(requestOrganizationPlan("/x", controller.signal)).rejects.toThrow("Aborted");
+  });
+});
+
+describe("requestApply", () => {
+  it("sends only the plan id and selected source paths", async () => {
+    const result = { requestedCount: 1, appliedCount: 1 };
+    const fetch = vi.fn(async () => Response.json({ ok: true, result }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(requestApply("plan-1", ["a.jpg"])).resolves.toEqual({ ok: true, result });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/apply",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ planId: "plan-1", sourcePaths: ["a.jpg"] }),
+      }),
+    );
+  });
+
+  it("passes through safe server errors", async () => {
+    const error = { code: "PLAN_NOT_FOUND", message: "Expired." };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error }, { status: 410 })));
+    await expect(requestApply("p", ["a"])).resolves.toEqual({ ok: false, error });
+  });
+
+  it("never claims success when the server can't be reached", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+    const response = await requestApply("p", ["a"]);
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error.message).toContain("outcome is unknown");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("garbage", { status: 200 })));
+    await expect(requestApply("p", ["a"])).resolves.toMatchObject({ ok: false });
   });
 });

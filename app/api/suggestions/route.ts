@@ -8,13 +8,15 @@ import {
   toSuggestFailure,
 } from "@/lib/server/organization/errors";
 import { generateOrganizationPlan } from "@/lib/server/organization/generate-plan";
+import { getPlanStore } from "@/lib/server/organization/plan-store";
 import type { SuggestFailure, SuggestResponse } from "@/types/organization";
 
 /**
  * POST /api/suggestions — read-only.
  *
  * Re-scans the requested folder, asks the local model for a plan, validates
- * it, and returns suggestions. Nothing on disk is changed. A route handler is
+ * it, remembers it server-side under a single-use `planId`, and returns the
+ * suggestions. Nothing on disk is changed. A route handler is
  * used (rather than a Server Action) so that the browser can cancel a long
  * generation: `request.signal` is passed through to the Ollama request.
  */
@@ -45,7 +47,7 @@ export async function POST(request: Request): Promise<Response> {
       provider: getOrganizationProvider(),
       signal: request.signal,
     });
-    return json({ ok: true, plan }, 200);
+    return json({ ok: true, plan: getPlanStore().remember(plan) }, 200);
   } catch (error) {
     const safe = toSuggestFailure(error);
     if (safe.code === "UNKNOWN") {

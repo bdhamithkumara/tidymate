@@ -94,6 +94,78 @@ export type SuggestFailure = {
   retryable: boolean;
 };
 
+/**
+ * A plan the server has remembered so it can be applied later. The browser
+ * refers to it only by `planId`; destinations and expected file metadata are
+ * read back from server memory, never from the request.
+ */
+export type ReviewablePlan = OrganizationPlan & {
+  planId: string;
+  expiresAt: string;
+};
+
 export type SuggestResponse =
-  | { ok: true; plan: OrganizationPlan }
+  | { ok: true; plan: ReviewablePlan }
   | { ok: false; error: SuggestFailure };
+
+/* ---------- Applying a plan ---------- */
+
+export const APPLY_STATUSES = ["applied", "rejected", "failed", "not-attempted"] as const;
+
+/**
+ * - `applied`: the file is now at its new path.
+ * - `rejected`: a safety re-check failed before anything was touched.
+ * - `failed`: the change was attempted and did not happen.
+ * - `not-attempted`: skipped because an earlier change failed unexpectedly.
+ */
+export type ApplyStatus = (typeof APPLY_STATUSES)[number];
+
+export const APPLY_FAILURE_REASONS = [
+  "source-missing",
+  "source-not-file",
+  "source-changed",
+  "destination-exists",
+  "destination-blocked",
+  "unsafe-path",
+  "conflict",
+  "permission-denied",
+  "unsupported-filesystem",
+  "unexpected",
+  "earlier-failure",
+] as const;
+
+export type ApplyFailureReason = (typeof APPLY_FAILURE_REASONS)[number];
+
+export type ApplyOperationResult = {
+  sourcePath: string;
+  suggestedPath: string;
+  action: ChangeAction;
+  status: ApplyStatus;
+  /** Present for every status except `applied`. */
+  reason?: ApplyFailureReason;
+};
+
+export type ApplyResult = {
+  rootPath: string;
+  rootName: string;
+  requestedCount: number;
+  appliedCount: number;
+  /** Everything that did not apply: rejected, failed or not attempted. */
+  notAppliedCount: number;
+  /** One entry per requested change, in the order they were processed. */
+  results: ApplyOperationResult[];
+  /** Folders TidyMate created, relative to the root. */
+  createdFolders: string[];
+  appliedAt: string;
+};
+
+export type ApplyErrorCode = ScanErrorCode | "INVALID_REQUEST" | "PLAN_NOT_FOUND" | "ROOT_CHANGED" | "BUSY";
+
+export type ApplyFailure = {
+  code: ApplyErrorCode;
+  message: string;
+};
+
+export type ApplyResponse =
+  | { ok: true; result: ApplyResult }
+  | { ok: false; error: ApplyFailure };

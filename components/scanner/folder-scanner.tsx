@@ -1,7 +1,7 @@
 "use client";
 
 import { CircleAlert, FolderSearch, LoaderCircle } from "lucide-react";
-import { useActionState, useState, type ReactNode } from "react";
+import { startTransition, useActionState, useState, type ReactNode } from "react";
 
 import { scanFolderAction, type ScanActionState } from "@/app/actions/scan-folder";
 import { OrganizationPanel } from "@/components/organizer/organization-panel";
@@ -26,6 +26,13 @@ export function FolderScanner({ aside }: { aside?: ReactNode }) {
     initialState,
   );
   const [folderPath, setFolderPath] = useState("");
+
+  function rescan(path: string) {
+    const formData = new FormData();
+    formData.set("folderPath", path);
+    setFolderPath(path);
+    startTransition(() => formAction(formData));
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -94,6 +101,7 @@ export function FolderScanner({ aside }: { aside?: ReactNode }) {
                 key={state.result.scannedAt}
                 folderPath={state.result.rootPath}
                 fileCount={state.result.stats.fileCount}
+                onRescan={() => rescan(state.result.rootPath)}
               />
             ) : null}
           </div>

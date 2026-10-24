@@ -13,10 +13,10 @@ Built for the Hacktoberfest Open-Source AI Challenge, Week 3: "Slow and Steady".
 | Stage | State |
 | --- | --- |
 | Read-only folder scanner | ✅ Built |
-| AI suggestions (Gemma 3 4B via Ollama) | ✅ Built (suggestions only) |
-| Approving and applying changes | Not started |
+| AI suggestions (Gemma 3 4B via Ollama) | ✅ Built |
+| Review, select, confirm, and apply | ✅ Built (move/rename only, no undo) |
 
-Today TidyMate can scan a folder you choose and ask a local Gemma model for a validated organization plan that you can review. It never changes anything on disk.
+The full loop works: scan a folder, ask local Gemma for suggestions, pick the ones you want, confirm, and TidyMate moves or renames those files after re-checking every one. It never deletes or overwrites anything.
 
 ## Safety model
 
@@ -35,8 +35,8 @@ Folder
 ```
 
 - Filesystem access lives only in server-side modules guarded by `import "server-only"`. Client components never get arbitrary filesystem access.
-- Model output is treated as untrusted input and validated before it is shown.
-- Nothing is renamed or moved without the user's explicit approval.
+- Model output is treated as untrusted input and validated before it is shown, and again before it is applied.
+- Nothing is renamed or moved without the user selecting it and confirming. Nothing is ever deleted or overwritten.
 
 ## Choosing a folder: why you paste a path
 
@@ -162,6 +162,57 @@ Gemma 3 4B on a CPU-only machine can be slow. In testing on a laptop with a 2 GB
 - `OLLAMA_TIMEOUT_MS` (default 5 minutes) is configurable. On slow machines, set it to `900000` (15 minutes) or more.
 - The loading state shows elapsed time and a **Cancel** button. Cancelling aborts the request to Ollama.
 
+## Reviewing and applying changes
+
+Gemma suggests. You select. The server re-checks. Only then does the filesystem change.
+
+1. Each suggestion in the review list has a checkbox; **Select all** / **Deselect all** and a live count ("3 of 10 selected: 2 files moved, 1 file renamed") are provided. Nothing is selected by default.
+2. **Apply selected changes** opens a confirmation: how many files, that they'll be moved or renamed, that nothing will be deleted, and that there is no undo.
+3. After applying, a result list shows every requested change: done (with its new path), skipped, failed, or not attempted, with a plain-language reason. Raw filesystem errors are never shown.
+
+### What the browser can and can't send
+
+When suggestions are generated, the server keeps the validated plan in memory under a random `planId` (single use, expires after an hour or when TidyMate restarts). To apply, the browser sends only:
+
+```json
+{ "planId": "…", "sourcePaths": ["IMG_4821.jpg", "notes.txt"] }
+```
+
+No destinations, no actions, no folder, no file metadata. Those come from the server's own copy of the plan, so the browser can only choose among suggestions the server produced. Unknown fields (e.g. `action: "delete"`) are rejected by a strict Zod schema. A plan is removed when an apply starts, so it can't be replayed.
+
+### Re-checks before anything changes (`lib/server/organization/apply-plan.ts`)
+
+1. **Fresh scan** of the folder. Its real path must still equal the plan's. A folder swapped for a symlink, deleted, or now protected aborts everything.
+2. **Re-validation** of the selected suggestions against that fresh scan with the same rules used at suggestion time (relative paths only, no `..`, portable names, unchanged extension, no duplicate or conflicting destinations, no chains or swaps, no existing destination).
+3. **Unchanged source**: size and modified time must match the plan exactly, so you only ever apply what you reviewed.
+4. **Immediately before each change**, on disk, without following links:
+   - the source is still a regular file (`lstat`), unchanged, inside the root, and reached only through real directories (`realpath` of its folder must be exactly where expected);
+   - every destination folder is either a real directory or is created, one level at a time, only if missing; a file or symlink in the way blocks the change;
+   - the destination itself does not exist (a symlink counts as existing);
+   - neither path is in a protected location.
+5. **No-overwrite move.** Node's `rename` silently replaces an existing file on macOS and Linux, so TidyMate instead hard-links the file to its new name (which fails if anything is there, even if it appeared a microsecond earlier) and then removes the old name. If the process stopped in between, the file would have two names, but nothing would be lost or overwritten. If removing the old name fails, the new name is removed again. Case-only renames on case-insensitive filesystems use `rename`, since both names are the same file.
+
+### Partial failure, honestly reported
+
+Filesystem changes are not transactional, and TidyMate doesn't pretend they are. Changes run one at a time, in a fixed order (by current path), and each gets its own result:
+
+- A safety re-check that fails just skips that change (`rejected`), and the rest continue. They're independent, because chains and swaps are never allowed.
+- An expected filesystem error (permission denied, drive doesn't support hard links) marks that change `failed`, and the rest continue.
+- An **unexpected** error stops the run. The remaining changes are reported as `not attempted`, and nothing is retried.
+- Folders created for a change that then fails are removed again if they're still empty.
+
+The summary never claims more than happened: "8 files organized successfully." or "7 files organized. 1 change could not be applied."
+
+Only one apply runs at a time.
+
+### No undo (yet)
+
+There is **no undo system** in this version. The result list shows exactly where every file went, so changes can be reversed by hand. The confirmation dialog says this before anything happens. A proper undo log is a planned improvement.
+
+### Not supported
+
+Deleting files, overwriting files, and moving anything outside the chosen folder are not supported, by design.
+
 ## Tech stack
 
 - [Next.js](https://nextjs.org) (App Router) + TypeScript (strict)
@@ -217,9 +268,10 @@ Config is parsed and validated server-side in `lib/config/env.ts`.
 app/
   actions/           Server Actions (folder scan)
   api/suggestions/   Route handler for AI suggestions (cancellable)
+  api/apply/         Route handler that applies selected changes (the only writer)
 components/
   landing/           Landing page sections
-  organizer/         Suggestion request, loading state, review list
+  organizer/         Suggestions, selection, confirmation, apply results
   scanner/           Folder picker form and scan results
   ui/                shadcn/ui primitives (generated)
 lib/
@@ -227,10 +279,10 @@ lib/
                      prompt, response schema, errors. No UI or filesystem code.
   config/            Server-side env parsing (Zod)
   files/             Browser-safe helpers: file kinds, formatting, input schema
-  organization/      Plan validation, path rules, limits, labels, API client
+  organization/      Plan validation, path rules, selection, labels, API client
   server/            Server-only code; every module imports "server-only"
     files/           Read-only scanner, path safety, protected locations
-    organization/    Re-scan → AI → validate orchestration, error mapping
+    organization/    Plan generation, plan store, apply engine, error mapping
   site.ts            Brand copy shared across the app
 types/               Shared serializable types (scan results, plans)
 tests/               Vitest unit tests, mirroring the source layout

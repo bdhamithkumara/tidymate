@@ -1,4 +1,9 @@
-import type { SuggestFailure, SuggestResponse } from "@/types/organization";
+import type {
+  ApplyFailure,
+  ApplyResponse,
+  SuggestFailure,
+  SuggestResponse,
+} from "@/types/organization";
 
 const SERVER_UNREACHABLE: SuggestFailure = {
   code: "UNKNOWN",
@@ -45,4 +50,44 @@ function isSuggestResponse(value: unknown): value is SuggestResponse {
     return false;
   }
   return value.ok === true ? "plan" in value : "error" in value;
+}
+
+const APPLY_UNREACHABLE: ApplyFailure = {
+  code: "UNKNOWN",
+  message:
+    "TidyMate's local server didn't respond, so the outcome is unknown. Scan the folder again to see its current state.",
+};
+
+/**
+ * Asks the server to apply the selected suggestions of a stored plan. Only
+ * the plan id and the selected source paths are sent.
+ */
+export async function requestApply(planId: string, sourcePaths: string[]): Promise<ApplyResponse> {
+  let response: Response;
+  try {
+    response = await fetch("/api/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ planId, sourcePaths }),
+    });
+  } catch {
+    return { ok: false, error: APPLY_UNREACHABLE };
+  }
+
+  try {
+    const body: unknown = await response.json();
+    if (isApplyResponse(body)) {
+      return body;
+    }
+  } catch {
+    // Fall through to the generic error.
+  }
+  return { ok: false, error: APPLY_UNREACHABLE };
+}
+
+function isApplyResponse(value: unknown): value is ApplyResponse {
+  if (typeof value !== "object" || value === null || !("ok" in value)) {
+    return false;
+  }
+  return value.ok === true ? "result" in value : "error" in value;
 }

@@ -74,6 +74,8 @@ describe("POST /api/suggestions", () => {
     expect(body).toMatchObject({
       ok: true,
       plan: {
+        planId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        expiresAt: expect.any(String),
         rootName: "Downloads",
         suggestions: [{ sourcePath: "IMG_4821.jpg", suggestedPath: "Images/IMG_4821.jpg", action: "move" }],
       },
